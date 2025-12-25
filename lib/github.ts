@@ -112,7 +112,7 @@ async function fetchContributionsGraphQL(username: string, year: number = 2024):
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Accept': 'application/vnd.github.v3+json',
+        'Accept': 'application/vnd.github.v4+json',
       },
       body: JSON.stringify({
         query,
@@ -125,13 +125,25 @@ async function fetchContributionsGraphQL(username: string, year: number = 2024):
     });
 
     if (!response.ok) {
-      throw new Error(`GraphQL request failed: ${response.statusText}`);
+      const errorText = await response.text();
+      if (response.status === 403 || response.status === 429) {
+        const rateLimitRemaining = response.headers.get('x-ratelimit-remaining');
+        const rateLimitReset = response.headers.get('x-ratelimit-reset');
+        const resetTime = rateLimitReset ? new Date(parseInt(rateLimitReset) * 1000).toLocaleTimeString() : 'soon';
+        throw new Error(`GitHub API rate limit exceeded. Remaining: ${rateLimitRemaining || 0}. Resets at: ${resetTime}. Please try again later or use a GitHub token for higher limits.`);
+      }
+      throw new Error(`GraphQL request failed: ${response.statusText} - ${errorText.substring(0, 200)}`);
     }
 
     const data = await response.json();
     
     if (data.errors) {
-      throw new Error(data.errors[0]?.message || 'GraphQL error');
+      const errorMessage = data.errors[0]?.message || 'GraphQL error';
+      // Check if it's a rate limit error
+      if (errorMessage.includes('rate limit') || errorMessage.includes('API rate limit')) {
+        throw new Error(`GitHub API rate limit exceeded. ${errorMessage}. Please try again later or use a GitHub token for higher limits.`);
+      }
+      throw new Error(errorMessage);
     }
 
     const contributionsCollection = data.data?.user?.contributionsCollection;
@@ -169,7 +181,7 @@ async function fetchContributionsGraphQL(username: string, year: number = 2024):
     });
 
     return { total, days };
-  } catch (error) {
+  } catch (error: any) {
     console.error('Error fetching contributions via GraphQL:', error);
     throw error;
   }
