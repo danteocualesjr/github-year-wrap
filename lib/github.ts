@@ -395,8 +395,7 @@ async function fetchCommitsFromRepos(username: string, repos: GitHubRepository[]
     });
   });
 
-  // Use matched contributions count, not total commits
-  const totalMatchedContributions = Array.from(contributionMap.values()).reduce((sum, count) => sum + count, 0);
+  // Use matched contributions count, not total commits (already calculated above)
   return { total: totalMatchedContributions, days: days.sort((a, b) => a.date.localeCompare(b.date)) };
 }
 
