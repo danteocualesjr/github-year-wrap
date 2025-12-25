@@ -6,13 +6,14 @@ import { generateYearReviewData } from '@/lib/github';
 async function fetchReviewData(username: string) {
   try {
     const data = await generateYearReviewData(username, 2024);
-    return data;
+    return { data, error: null };
   } catch (error: any) {
     console.error('Error fetching review data:', error);
     if (error.message?.includes('not found')) {
-      return null;
+      return { data: null, error: null };
     }
-    throw error;
+    // Return error instead of throwing to handle gracefully
+    return { data: null, error: error.message || 'Failed to fetch data' };
   }
 }
 
@@ -21,9 +22,14 @@ export default async function ReviewPage({
 }: {
   params: { username: string };
 }) {
-  const data = await fetchReviewData(params.username);
+  const result = await fetchReviewData(params.username);
 
-  if (!data) {
+  if (result.error) {
+    // Throw error to trigger error.tsx
+    throw new Error(result.error);
+  }
+
+  if (!result.data) {
     notFound();
   }
 
@@ -40,7 +46,7 @@ export default async function ReviewPage({
           Back to Home
         </Link>
       </div>
-      <YearReviewCard data={data} username={params.username} />
+      <YearReviewCard data={result.data} username={params.username} />
     </main>
   );
 }

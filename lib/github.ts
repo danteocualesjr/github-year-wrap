@@ -17,8 +17,11 @@ export async function fetchUserProfile(username: string): Promise<GitHubUser> {
     if (response.status === 404) {
       throw new Error('User not found');
     }
-    if (response.status === 403) {
-      throw new Error('API rate limit exceeded. Please try again later.');
+    if (response.status === 403 || response.status === 429) {
+      const rateLimitRemaining = response.headers.get('x-ratelimit-remaining');
+      const rateLimitReset = response.headers.get('x-ratelimit-reset');
+      const resetTime = rateLimitReset ? new Date(parseInt(rateLimitReset) * 1000).toLocaleTimeString() : 'soon';
+      throw new Error(`GitHub API rate limit exceeded. Remaining: ${rateLimitRemaining || 0}. Resets at: ${resetTime}. Please try again later or use a GitHub token for higher limits.`);
     }
     throw new Error(`Failed to fetch user: ${response.statusText}`);
   }
@@ -45,8 +48,11 @@ export async function fetchUserRepositories(username: string): Promise<GitHubRep
     );
 
     if (!response.ok) {
-      if (response.status === 403) {
-        throw new Error('API rate limit exceeded. Please try again later.');
+      if (response.status === 403 || response.status === 429) {
+        const rateLimitRemaining = response.headers.get('x-ratelimit-remaining');
+        const rateLimitReset = response.headers.get('x-ratelimit-reset');
+        const resetTime = rateLimitReset ? new Date(parseInt(rateLimitReset) * 1000).toLocaleTimeString() : 'soon';
+        throw new Error(`GitHub API rate limit exceeded. Remaining: ${rateLimitRemaining || 0}. Resets at: ${resetTime}. Please try again later or use a GitHub token for higher limits.`);
       }
       throw new Error(`Failed to fetch repositories: ${response.statusText}`);
     }
@@ -187,37 +193,85 @@ async function fetchCommitsFromRepos(username: string, repos: GitHubRepository[]
   }
 
   // Fetch commits from repositories (limit to most active repos to avoid rate limits)
+  // Include forks since users can contribute to their own forks
+  // Note: We can only access public repos without authentication
+  // Limit to top 10 repos to avoid hitting rate limits (60 requests/hour unauthenticated)
+  // Each repo might need multiple pages, so we need to be conservative
   const activeRepos = repos
-    .filter(repo => !repo.fork && !repo.private)
+    .filter(repo => !repo.private) // Only public repos (can't access private without auth)
     .sort((a, b) => {
       const aDate = new Date(a.pushed_at);
       const bDate = new Date(b.pushed_at);
       return bDate.getTime() - aDate.getTime();
     })
-    .slice(0, 50); // Limit to top 50 most active repos
+    .slice(0, 10); // Reduced to 10 repos to avoid rate limits
 
   let totalCommits = 0;
 
+  console.log(`Processing ${activeRepos.length} repositories for commits...`);
+  
   for (const repo of activeRepos) {
     try {
       const since = startDate.toISOString();
       const until = endDate.toISOString();
-      
-      const response = await fetch(
-        `${GITHUB_API_BASE}/repos/${repo.full_name}/commits?author=${username}&since=${since}&until=${until}&per_page=100`,
-        {
+      let page = 1;
+      const perPage = 100;
+      let hasMoreCommits = true;
+      let repoCommits = 0;
+
+      // Fetch all commits with pagination
+      // Note: We fetch all commits and filter by author client-side because
+      // the author parameter might not match all commits (e.g., different email formats)
+      while (hasMoreCommits) {
+        const url = `${GITHUB_API_BASE}/repos/${repo.full_name}/commits?since=${since}&until=${until}&per_page=${perPage}&page=${page}`;
+        const response = await fetch(url, {
           headers: {
             'Accept': 'application/vnd.github.v3+json',
           },
-        }
-      );
+        });
 
-      if (response.ok) {
+        if (!response.ok) {
+          const errorText = await response.text();
+          if (response.status === 404 || response.status === 409) {
+            // Repo might be empty or have no commits
+            break;
+          }
+          if (response.status === 403 || response.status === 429) {
+            const rateLimitRemaining = response.headers.get('x-ratelimit-remaining');
+            console.warn(`Rate limited on ${repo.full_name}. Remaining: ${rateLimitRemaining || 0}. Stopping commits fetch.`);
+            hasMoreCommits = false;
+            // Stop processing all repos if we hit rate limit
+            return { total: totalCommits, days: [] };
+          }
+          console.warn(`Failed to fetch commits from ${repo.full_name}: ${response.status} - ${errorText.substring(0, 100)}`);
+          break;
+        }
+
         const commits = await response.json();
+        
+        if (!Array.isArray(commits)) {
+          console.warn(`Unexpected response format from ${repo.full_name}`);
+          break;
+        }
+        
+        if (commits.length === 0) {
+          hasMoreCommits = false;
+          break;
+        }
+
+        repoCommits += commits.length;
         totalCommits += commits.length;
 
         commits.forEach((commit: any) => {
-          if (commit.commit?.author?.date) {
+          // Check if commit is by the user (match by login or author name)
+          const commitAuthor = commit.author?.login?.toLowerCase();
+          const commitCommitter = commit.committer?.login?.toLowerCase();
+          const authorName = commit.commit?.author?.name?.toLowerCase();
+          const isUserCommit = commitAuthor === username.toLowerCase() || 
+                              commitCommitter === username.toLowerCase() ||
+                              authorName?.includes(username.toLowerCase());
+          
+          if (isUserCommit && commit.commit?.author?.date) {
             const commitDate = new Date(commit.commit.author.date);
             if (commitDate >= startDate && commitDate <= endDate) {
               const dateKey = commitDate.toISOString().split('T')[0];
@@ -226,12 +280,30 @@ async function fetchCommitsFromRepos(username: string, repos: GitHubRepository[]
             }
           }
         });
+
+        // If we got fewer than perPage, we're done with this repo
+        if (commits.length < perPage) {
+          hasMoreCommits = false;
+        } else {
+          page++;
+          // Limit to prevent infinite loops and rate limits
+          // Only fetch first page to conserve API calls
+          if (page > 1) {
+            hasMoreCommits = false;
+          }
+        }
       }
-    } catch (error) {
-      console.error(`Error fetching commits from ${repo.full_name}:`, error);
+      
+      if (repoCommits > 0) {
+        console.log(`Found ${repoCommits} commits in ${repo.full_name}`);
+      }
+    } catch (error: any) {
+      console.error(`Error fetching commits from ${repo.full_name}:`, error.message || error);
       // Continue with other repos
     }
   }
+  
+  console.log(`Total commits found: ${totalCommits}`);
 
   // Convert to ContributionDay array
   const days: ContributionDay[] = [];
@@ -262,34 +334,45 @@ async function fetchCommitsFromRepos(username: string, repos: GitHubRepository[]
  * Tries GraphQL first, falls back to fetching commits from repos
  */
 export async function fetchContributionEvents(username: string, repos: GitHubRepository[], year: number = 2024): Promise<ContributionDay[]> {
+  // Try GraphQL first - it's more efficient (single query) and doesn't hit rate limits as easily
   try {
-    // Try GraphQL API first (more accurate but may require auth for higher limits)
+    console.log(`Fetching contributions for ${username} in ${year} using GraphQL API...`);
     const graphqlResult = await fetchContributionsGraphQL(username, year);
-    return graphqlResult.days;
-  } catch (error) {
-    console.log('GraphQL failed, falling back to commits API:', error);
-    // Fallback to fetching commits from repositories
-    try {
-      const commitsResult = await fetchCommitsFromRepos(username, repos, year);
-      return commitsResult.days;
-    } catch (fallbackError) {
-      console.error('Both methods failed:', fallbackError);
-      // Return empty contributions as last resort
-      const days: ContributionDay[] = [];
-      const startDate = new Date(year, 0, 1);
-      const endDate = new Date(year, 11, 31);
-      const currentDate = new Date(startDate);
-      while (currentDate <= endDate) {
-        days.push({
-          date: currentDate.toISOString().split('T')[0],
-          count: 0,
-          level: 0,
-        });
-        currentDate.setDate(currentDate.getDate() + 1);
-      }
-      return days;
+    console.log(`GraphQL found ${graphqlResult.total} contributions`);
+    if (graphqlResult.total > 0 || graphqlResult.days.length > 0) {
+      return graphqlResult.days;
     }
+  } catch (error: any) {
+    console.log('GraphQL failed, trying commits API:', error.message || error);
   }
+
+  // Fallback to commits API (limited to avoid rate limits)
+  try {
+    console.log(`Fetching contributions for ${username} in ${year} using commits API...`);
+    const commitsResult = await fetchCommitsFromRepos(username, repos, year);
+    console.log(`Found ${commitsResult.total} total commits`);
+    if (commitsResult.total > 0) {
+      return commitsResult.days;
+    }
+  } catch (fallbackError: any) {
+    console.error('Commits API failed:', fallbackError.message || fallbackError);
+  }
+
+  // Return empty contributions as last resort
+  console.warn('All methods failed, returning empty contributions');
+  const days: ContributionDay[] = [];
+  const startDate = new Date(year, 0, 1);
+  const endDate = new Date(year, 11, 31);
+  const currentDate = new Date(startDate);
+  while (currentDate <= endDate) {
+    days.push({
+      date: currentDate.toISOString().split('T')[0],
+      count: 0,
+      level: 0,
+    });
+    currentDate.setDate(currentDate.getDate() + 1);
+  }
+  return days;
 }
 
 /**
@@ -387,15 +470,10 @@ export async function generateYearReviewData(
   const topLanguages = calculateTopLanguages(repos);
   const contributionGraph = await fetchContributionEvents(username, repos, year);
   
-  // Try to get accurate total from GraphQL, otherwise sum from graph
-  let totalContributions = 0;
-  try {
-    const graphqlResult = await fetchContributionsGraphQL(username, year);
-    totalContributions = graphqlResult.total;
-  } catch (error) {
-    // Fallback: sum from contribution graph
-    totalContributions = contributionGraph.reduce((sum, day) => sum + day.count, 0);
-  }
+  // Calculate total from contribution graph (sum of all daily counts)
+  const totalContributions = contributionGraph.reduce((sum, day) => sum + day.count, 0);
+  
+  console.log(`Total contributions calculated: ${totalContributions}`);
 
   const monthlySummaries = calculateMonthlySummaries(repos, year, contributionGraph);
 

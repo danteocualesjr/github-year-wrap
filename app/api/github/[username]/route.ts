@@ -9,7 +9,9 @@ export async function GET(
     const username = params.username;
     const year = 2024; // Can be made configurable later
 
+    console.log(`[API] Fetching year review data for ${username}...`);
     const data = await generateYearReviewData(username, year);
+    console.log(`[API] Successfully fetched data. Total contributions: ${data.totalContributions}`);
 
     return NextResponse.json(data, {
       headers: {
@@ -17,7 +19,8 @@ export async function GET(
       },
     });
   } catch (error: any) {
-    console.error('Error fetching GitHub data:', error);
+    console.error('[API] Error fetching GitHub data:', error);
+    console.error('[API] Error stack:', error.stack);
     
     return NextResponse.json(
       { error: error.message || 'Failed to fetch GitHub data' },
