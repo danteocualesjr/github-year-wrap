@@ -108,12 +108,20 @@ async function fetchContributionsGraphQL(username: string, year: number = 2024):
   `;
 
   try {
+    // Try to use GitHub token if available (for authenticated requests)
+    const githubToken = process.env.GITHUB_TOKEN;
+    const headers: HeadersInit = {
+      'Content-Type': 'application/json',
+      'Accept': 'application/vnd.github.v4+json',
+    };
+    
+    if (githubToken) {
+      headers['Authorization'] = `Bearer ${githubToken}`;
+    }
+
     const response = await fetch('https://api.github.com/graphql', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Accept': 'application/vnd.github.v4+json',
-      },
+      headers,
       body: JSON.stringify({
         query,
         variables: {
@@ -139,9 +147,15 @@ async function fetchContributionsGraphQL(username: string, year: number = 2024):
     
     if (data.errors) {
       const errorMessage = data.errors[0]?.message || 'GraphQL error';
+      console.error('GraphQL API errors:', data.errors);
       // Check if it's a rate limit error
       if (errorMessage.includes('rate limit') || errorMessage.includes('API rate limit')) {
         throw new Error(`GitHub API rate limit exceeded. ${errorMessage}. Please try again later or use a GitHub token for higher limits.`);
+      }
+      // Check if it's an authentication error (GraphQL requires auth for contribution data)
+      if (errorMessage.includes('requires authentication') || errorMessage.includes('Bad credentials')) {
+        console.log('GraphQL requires authentication, will fall back to commits API');
+        throw new Error('GraphQL requires authentication');
       }
       throw new Error(errorMessage);
     }
@@ -207,7 +221,7 @@ async function fetchCommitsFromRepos(username: string, repos: GitHubRepository[]
   // Fetch commits from repositories (limit to most active repos to avoid rate limits)
   // Include forks since users can contribute to their own forks
   // Note: We can only access public repos without authentication
-  // Limit to top 10 repos to avoid hitting rate limits (60 requests/hour unauthenticated)
+  // Limit to top 20 repos to balance completeness vs rate limits (60 requests/hour unauthenticated)
   // Each repo might need multiple pages, so we need to be conservative
   const activeRepos = repos
     .filter(repo => !repo.private) // Only public repos (can't access private without auth)
@@ -216,7 +230,7 @@ async function fetchCommitsFromRepos(username: string, repos: GitHubRepository[]
       const bDate = new Date(b.pushed_at);
       return bDate.getTime() - aDate.getTime();
     })
-    .slice(0, 10); // Reduced to 10 repos to avoid rate limits
+    .slice(0, 20); // Increased to 20 repos for better coverage
 
   let totalCommits = 0;
 
@@ -274,14 +288,33 @@ async function fetchCommitsFromRepos(username: string, repos: GitHubRepository[]
         repoCommits += commits.length;
         totalCommits += commits.length;
 
+        // Check if this repo is owned by the user (for more lenient matching)
+        const repoOwner = repo.full_name.split('/')[0]?.toLowerCase();
+        const isUserRepo = repoOwner === username.toLowerCase();
+        
         commits.forEach((commit: any) => {
           // Check if commit is by the user (match by login or author name)
           const commitAuthor = commit.author?.login?.toLowerCase();
           const commitCommitter = commit.committer?.login?.toLowerCase();
           const authorName = commit.commit?.author?.name?.toLowerCase();
-          const isUserCommit = commitAuthor === username.toLowerCase() || 
-                              commitCommitter === username.toLowerCase() ||
-                              authorName?.includes(username.toLowerCase());
+          const authorEmail = commit.commit?.author?.email?.toLowerCase();
+          const usernameLower = username.toLowerCase();
+          
+          // Matching logic:
+          // 1. Exact match on author/committer login (most reliable)
+          // 2. Author name contains username or vice versa
+          // 3. Author email contains username
+          // 4. For user-owned repos, also count if no author info (likely user's commits)
+          const hasExactMatch = commitAuthor === usernameLower || commitCommitter === usernameLower;
+          const hasNameMatch = authorName && (
+            authorName === usernameLower ||
+            authorName.includes(usernameLower) ||
+            usernameLower.includes(authorName.split(' ')[0]?.toLowerCase() || '')
+          );
+          const hasEmailMatch = authorEmail && authorEmail.includes(usernameLower);
+          const isUserOwnedRepoCommit = isUserRepo && (!commitAuthor && !commitCommitter);
+          
+          const isUserCommit = hasExactMatch || hasNameMatch || hasEmailMatch || isUserOwnedRepoCommit;
           
           if (isUserCommit && commit.commit?.author?.date) {
             const commitDate = new Date(commit.commit.author.date);
@@ -298,10 +331,11 @@ async function fetchCommitsFromRepos(username: string, repos: GitHubRepository[]
           hasMoreCommits = false;
         } else {
           page++;
-          // Limit to prevent infinite loops and rate limits
-          // Only fetch first page to conserve API calls
-          if (page > 1) {
+          // Continue fetching pages, but limit to prevent excessive API calls
+          // Allow up to 5 pages per repo to balance completeness vs rate limits
+          if (page > 5) {
             hasMoreCommits = false;
+            console.log(`Reached page limit (5) for ${repo.full_name}, stopping`);
           }
         }
       }
@@ -315,7 +349,11 @@ async function fetchCommitsFromRepos(username: string, repos: GitHubRepository[]
     }
   }
   
-  console.log(`Total commits found: ${totalCommits}`);
+  console.log(`Found ${totalCommits} total commits`);
+  
+  // Count how many days have contributions
+  const daysWithContributions = Array.from(contributionMap.values()).filter(count => count > 0).length;
+  console.log(`Days with contributions: ${daysWithContributions}`);
 
   // Convert to ContributionDay array
   const days: ContributionDay[] = [];
