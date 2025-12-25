@@ -82,7 +82,11 @@ export async function fetchUserRepositories(username: string): Promise<GitHubRep
  */
 async function fetchContributionsGraphQL(username: string, year: number = 2025): Promise<{ total: number; days: ContributionDay[] }> {
   const startDate = `${year}-01-01T00:00:00Z`;
-  const endDate = `${year}-12-31T23:59:59Z`;
+  // Use today's date if querying current year, otherwise use end of year
+  const isCurrentYear = year === new Date().getFullYear();
+  const endDate = isCurrentYear 
+    ? new Date().toISOString()
+    : `${year}-12-31T23:59:59Z`;
   
   const query = `
     query($username: String!, $from: DateTime!, $to: DateTime!) {
@@ -207,16 +211,23 @@ async function fetchContributionsGraphQL(username: string, year: number = 2025):
  */
 async function fetchCommitsFromRepos(username: string, repos: GitHubRepository[], year: number = 2025): Promise<{ total: number; days: ContributionDay[] }> {
   const startDate = new Date(year, 0, 1);
-  const endDate = new Date(year, 11, 31, 23, 59, 59);
+  // Use today's date if querying current year, otherwise use end of year
+  const isCurrentYear = year === new Date().getFullYear();
+  const endDate = isCurrentYear 
+    ? new Date() 
+    : new Date(year, 11, 31, 23, 59, 59);
   
-  // Initialize contribution map for all days
+  // Initialize contribution map for all days from start to end
   const contributionMap = new Map<string, number>();
   const currentDate = new Date(startDate);
-  while (currentDate <= endDate) {
+  const finalEndDate = new Date(endDate);
+  while (currentDate <= finalEndDate) {
     const dateKey = currentDate.toISOString().split('T')[0];
     contributionMap.set(dateKey, 0);
     currentDate.setDate(currentDate.getDate() + 1);
   }
+  
+  console.log(`Initialized contribution map for ${contributionMap.size} days (${startDate.toISOString().split('T')[0]} to ${finalEndDate.toISOString().split('T')[0]})`);
 
   // Fetch commits from repositories (limit to most active repos to avoid rate limits)
   // Include forks since users can contribute to their own forks
@@ -234,9 +245,12 @@ async function fetchCommitsFromRepos(username: string, repos: GitHubRepository[]
 
   let totalCommits = 0;
 
-  console.log(`Processing ${activeRepos.length} repositories for commits...`);
+  console.log(`Processing ${activeRepos.length} repositories for commits from ${startDate.toISOString().split('T')[0]} to ${endDate.toISOString().split('T')[0]}...`);
   
   for (const repo of activeRepos) {
+    const repoOwner = repo.full_name.split('/')[0]?.toLowerCase();
+    const isUserRepo = repoOwner === username.toLowerCase();
+    console.log(`Checking repo: ${repo.full_name} (user-owned: ${isUserRepo})`);
     try {
       const since = startDate.toISOString();
       const until = endDate.toISOString();
@@ -288,12 +302,21 @@ async function fetchCommitsFromRepos(username: string, repos: GitHubRepository[]
         repoCommits += commits.length;
         totalCommits += commits.length;
 
-        // Check if this repo is owned by the user (for more lenient matching)
-        const repoOwner = repo.full_name.split('/')[0]?.toLowerCase();
-        const isUserRepo = repoOwner === username.toLowerCase();
-        
         commits.forEach((commit: any) => {
-          // Check if commit is by the user (match by login or author name)
+          if (!commit.commit?.author?.date) return;
+          
+          const commitDate = new Date(commit.commit.author.date);
+          if (commitDate < startDate || commitDate > endDate) return;
+          
+          // For user-owned repos, count ALL commits (they own the repo)
+          if (isUserRepo) {
+            const dateKey = commitDate.toISOString().split('T')[0];
+            const current = contributionMap.get(dateKey) || 0;
+            contributionMap.set(dateKey, current + 1);
+            return;
+          }
+          
+          // For other repos, check if commit is by the user
           const commitAuthor = commit.author?.login?.toLowerCase();
           const commitCommitter = commit.committer?.login?.toLowerCase();
           const authorName = commit.commit?.author?.name?.toLowerCase();
@@ -304,7 +327,6 @@ async function fetchCommitsFromRepos(username: string, repos: GitHubRepository[]
           // 1. Exact match on author/committer login (most reliable)
           // 2. Author name contains username or vice versa
           // 3. Author email contains username
-          // 4. For user-owned repos, also count if no author info (likely user's commits)
           const hasExactMatch = commitAuthor === usernameLower || commitCommitter === usernameLower;
           const hasNameMatch = authorName && (
             authorName === usernameLower ||
@@ -312,17 +334,13 @@ async function fetchCommitsFromRepos(username: string, repos: GitHubRepository[]
             usernameLower.includes(authorName.split(' ')[0]?.toLowerCase() || '')
           );
           const hasEmailMatch = authorEmail && authorEmail.includes(usernameLower);
-          const isUserOwnedRepoCommit = isUserRepo && (!commitAuthor && !commitCommitter);
           
-          const isUserCommit = hasExactMatch || hasNameMatch || hasEmailMatch || isUserOwnedRepoCommit;
+          const isUserCommit = hasExactMatch || hasNameMatch || hasEmailMatch;
           
-          if (isUserCommit && commit.commit?.author?.date) {
-            const commitDate = new Date(commit.commit.author.date);
-            if (commitDate >= startDate && commitDate <= endDate) {
-              const dateKey = commitDate.toISOString().split('T')[0];
-              const current = contributionMap.get(dateKey) || 0;
-              contributionMap.set(dateKey, current + 1);
-            }
+          if (isUserCommit) {
+            const dateKey = commitDate.toISOString().split('T')[0];
+            const current = contributionMap.get(dateKey) || 0;
+            contributionMap.set(dateKey, current + 1);
           }
         });
 
@@ -341,7 +359,7 @@ async function fetchCommitsFromRepos(username: string, repos: GitHubRepository[]
       }
       
       if (repoCommits > 0) {
-        console.log(`Found ${repoCommits} commits in ${repo.full_name}`);
+        console.log(`Processed ${repoCommits} commits from ${repo.full_name}`);
       }
     } catch (error: any) {
       console.error(`Error fetching commits from ${repo.full_name}:`, error.message || error);
@@ -349,11 +367,12 @@ async function fetchCommitsFromRepos(username: string, repos: GitHubRepository[]
     }
   }
   
-  console.log(`Found ${totalCommits} total commits`);
+  console.log(`Found ${totalCommits} total commits across all repos`);
   
-  // Count how many days have contributions
+  // Count total matched contributions and days with contributions
+  const totalMatchedContributions = Array.from(contributionMap.values()).reduce((sum, count) => sum + count, 0);
   const daysWithContributions = Array.from(contributionMap.values()).filter(count => count > 0).length;
-  console.log(`Days with contributions: ${daysWithContributions}`);
+  console.log(`Matched ${totalMatchedContributions} contributions across ${daysWithContributions} days`);
 
   // Convert to ContributionDay array
   const days: ContributionDay[] = [];
@@ -376,7 +395,9 @@ async function fetchCommitsFromRepos(username: string, repos: GitHubRepository[]
     });
   });
 
-  return { total: totalCommits, days: days.sort((a, b) => a.date.localeCompare(b.date)) };
+  // Use matched contributions count, not total commits
+  const totalMatchedContributions = Array.from(contributionMap.values()).reduce((sum, count) => sum + count, 0);
+  return { total: totalMatchedContributions, days: days.sort((a, b) => a.date.localeCompare(b.date)) };
 }
 
 /**
@@ -388,9 +409,15 @@ export async function fetchContributionEvents(username: string, repos: GitHubRep
   try {
     console.log(`Fetching contributions for ${username} in ${year} using GraphQL API...`);
     const graphqlResult = await fetchContributionsGraphQL(username, year);
-    console.log(`GraphQL found ${graphqlResult.total} contributions`);
-    if (graphqlResult.total > 0 || graphqlResult.days.length > 0) {
+    console.log(`GraphQL found ${graphqlResult.total} contributions, ${graphqlResult.days.length} days with data`);
+    
+    // Check if we got meaningful data (non-zero contributions or days with counts)
+    const daysWithContributions = graphqlResult.days.filter(d => d.count > 0).length;
+    if (graphqlResult.total > 0 || daysWithContributions > 0) {
+      console.log(`Using GraphQL data: ${graphqlResult.total} total contributions across ${daysWithContributions} days`);
       return graphqlResult.days;
+    } else {
+      console.log('GraphQL returned empty data, falling back to commits API');
     }
   } catch (error: any) {
     console.log('GraphQL failed, trying commits API:', error.message || error);
@@ -412,7 +439,8 @@ export async function fetchContributionEvents(username: string, repos: GitHubRep
   console.warn('All methods failed, returning empty contributions');
   const days: ContributionDay[] = [];
   const startDate = new Date(year, 0, 1);
-  const endDate = new Date(year, 11, 31);
+  const isCurrentYear = year === new Date().getFullYear();
+  const endDate = isCurrentYear ? new Date() : new Date(year, 11, 31);
   const currentDate = new Date(startDate);
   while (currentDate <= endDate) {
     days.push({
