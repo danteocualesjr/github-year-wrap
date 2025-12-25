@@ -80,7 +80,7 @@ export async function fetchUserRepositories(username: string): Promise<GitHubRep
  * Fetches contribution data using GitHub GraphQL API
  * This provides accurate contribution counts and activity
  */
-async function fetchContributionsGraphQL(username: string, year: number = 2024): Promise<{ total: number; days: ContributionDay[] }> {
+async function fetchContributionsGraphQL(username: string, year: number = 2025): Promise<{ total: number; days: ContributionDay[] }> {
   const startDate = `${year}-01-01T00:00:00Z`;
   const endDate = `${year}-12-31T23:59:59Z`;
   
@@ -205,7 +205,7 @@ async function fetchContributionsGraphQL(username: string, year: number = 2024):
  * Fetches commits from repositories to calculate contributions
  * This is a fallback method when GraphQL is not available
  */
-async function fetchCommitsFromRepos(username: string, repos: GitHubRepository[], year: number = 2024): Promise<{ total: number; days: ContributionDay[] }> {
+async function fetchCommitsFromRepos(username: string, repos: GitHubRepository[], year: number = 2025): Promise<{ total: number; days: ContributionDay[] }> {
   const startDate = new Date(year, 0, 1);
   const endDate = new Date(year, 11, 31, 23, 59, 59);
   
@@ -383,7 +383,7 @@ async function fetchCommitsFromRepos(username: string, repos: GitHubRepository[]
  * Fetches contribution events for a user
  * Tries GraphQL first, falls back to fetching commits from repos
  */
-export async function fetchContributionEvents(username: string, repos: GitHubRepository[], year: number = 2024): Promise<ContributionDay[]> {
+export async function fetchContributionEvents(username: string, repos: GitHubRepository[], year: number = 2025): Promise<ContributionDay[]> {
   // Try GraphQL first - it's more efficient (single query) and doesn't hit rate limits as easily
   try {
     console.log(`Fetching contributions for ${username} in ${year} using GraphQL API...`);
@@ -457,7 +457,7 @@ export function calculateTopLanguages(repos: GitHubRepository[]): LanguageStats[
  */
 export function calculateMonthlySummaries(
   repos: GitHubRepository[],
-  year: number = 2024,
+  year: number = 2025,
   contributionGraph: ContributionDay[] = []
 ): MonthlySummary[] {
   const monthlyData = new Map<string, { commits: number; reposCreated: number }>();
@@ -510,7 +510,7 @@ export function calculateMonthlySummaries(
  */
 export async function generateYearReviewData(
   username: string,
-  year: number = 2024
+  year: number = 2025
 ): Promise<YearReviewData> {
   const [user, repos] = await Promise.all([
     fetchUserProfile(username),

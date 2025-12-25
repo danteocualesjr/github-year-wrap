@@ -25,7 +25,7 @@ export default function DownloadButtons({ cardRef, username }: DownloadButtonsPr
       });
 
       const link = document.createElement('a');
-      link.download = `github-year-review-${username}-2024.png`;
+      link.download = `github-year-review-${username}-2025.png`;
       link.href = canvas.toDataURL('image/png');
       link.click();
     } catch (error) {
@@ -56,7 +56,7 @@ export default function DownloadButtons({ cardRef, username }: DownloadButtonsPr
       });
 
       pdf.addImage(imgData, 'PNG', 0, 0, canvas.width, canvas.height);
-      pdf.save(`github-year-review-${username}-2024.pdf`);
+      pdf.save(`github-year-review-${username}-2025.pdf`);
     } catch (error) {
       console.error('Error generating PDF:', error);
       alert('Failed to generate PDF. Please try again.');

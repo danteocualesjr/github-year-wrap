@@ -5,7 +5,7 @@ import { generateYearReviewData } from '@/lib/github';
 
 async function fetchReviewData(username: string) {
   try {
-    const data = await generateYearReviewData(username, 2024);
+    const data = await generateYearReviewData(username, 2025);
     return { data, error: null };
   } catch (error: any) {
     console.error('Error fetching review data:', error);

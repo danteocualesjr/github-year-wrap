@@ -16,7 +16,7 @@ export default function ShareButtons({ data, username }: ShareButtonsProps) {
     ? `${window.location.origin}/review/${username}`
     : '';
 
-  const shareText = `Check out my GitHub Year in Review 2024! 🎉\n\n` +
+  const shareText = `Check out my GitHub Year in Review 2025! 🎉\n\n` +
     `📊 ${formatNumber(data.totalContributions)} contributions\n` +
     `⭐ ${formatNumber(data.totalStars)} stars\n` +
     `📦 ${formatNumber(data.totalRepositories)} repositories\n` +

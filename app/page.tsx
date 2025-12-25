@@ -8,7 +8,7 @@ export default function Home() {
           GitHub Year in Review
         </h1>
         <p className="text-xl text-github-text-muted max-w-2xl mx-auto">
-          Generate your beautiful GitHub Year-in-Review summary for 2024
+          Generate your beautiful GitHub Year-in-Review summary for 2025
         </p>
       </div>
       

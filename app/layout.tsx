@@ -2,7 +2,7 @@ import type { Metadata } from 'next'
 import './globals.css'
 
 export const metadata: Metadata = {
-  title: 'GitHub Year in Review 2024',
+  title: 'GitHub Year in Review 2025',
   description: 'Generate your beautiful GitHub Year-in-Review summary',
 }
 

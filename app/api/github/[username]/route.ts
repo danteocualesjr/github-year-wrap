@@ -7,7 +7,7 @@ export async function GET(
 ) {
   try {
     const username = params.username;
-    const year = 2024; // Can be made configurable later
+    const year = 2025; // Can be made configurable later
 
     console.log(`[API] Fetching year review data for ${username}...`);
     const data = await generateYearReviewData(username, year);
